@@ -9,6 +9,10 @@ const ENEMY_SIZE = 16;
 const SCREEN_W = window.innerWidth;
 const SCREEN_H = window.innerHeight;
 
+// --- TÍNH TOÁN LỀ AN TOÀN (QUAN TRỌNG) ---
+// Để bậc thang không bị mất hình, tâm của nó phải cách mép ít nhất 1 nửa chiều rộng
+const SAFE_MARGIN = PLATFORM_W / 2; 
+
 const CENTER_X = SCREEN_W / 2;
 const LANE_OFFSET = 90; 
 const LANE_LEFT = CENTER_X - LANE_OFFSET;
@@ -23,7 +27,7 @@ const config = {
     physics: {
         default: 'arcade',
         arcade: {
-            gravity: { y: 1200 }, // Trọng lực
+            gravity: { y: 1200 },
             debug: false 
         }
     },
@@ -99,20 +103,15 @@ function create() {
     player.body.checkCollision.left = false;
     player.body.checkCollision.right = false;
 
-    // --- XỬ LÝ VA CHẠM (FIX LỖI DÍNH/ĐỨNG YÊN) ---
+    // --- XỬ LÝ VA CHẠM ---
     this.physics.add.collider(player, platforms, (player, platform) => {
-        // Chỉ xử lý khi chân chạm đất
         if (player.body.touching.down) {
             if (platform.isFake) {
                 platform.alpha = 0; 
                 platform.body.checkCollision.none = true;
             } else {
-                // FIX 1: Tăng lực nhảy lên một chút (-700)
                 player.setVelocityY(-700); 
-                
-                // FIX 2: Đẩy nhân vật lên 4px để tách hoàn toàn khỏi nền
-                // (Giúp tránh lỗi bị kẹt trong vật lý của Phaser)
-                player.y -= 4;
+                player.y -= 4; 
             }
         }
     });
@@ -122,10 +121,9 @@ function create() {
         const playerBottom = player.body.y + player.body.height;
         const enemyTop = enemy.body.y;
 
-        // Cho phép lún sâu 15px
         if (player.body.velocity.y > 0 && playerBottom < enemyTop + 15) {
             enemy.destroy();
-            player.setVelocityY(-1100); // Super Jump cao hơn nữa
+            player.setVelocityY(-1100); 
             score += 20;
             scoreText.setText('Score: ' + score);
             this.cameras.main.shake(100, 0.01);
@@ -146,18 +144,24 @@ function create() {
 }
 
 function createStartSafeZone() {
-    const startPlatform = platforms.create(LANE_LEFT, 500, 'platform');
-    resetPlatformProperties(startPlatform, LANE_LEFT, 500, true);
+    // Đặt bậc an toàn ở vị trí tính toán hợp lý
+    const startX = Phaser.Math.Clamp(LANE_LEFT, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
+    const startPlatform = platforms.create(startX, 500, 'platform');
+    resetPlatformProperties(startPlatform, startX, 500, true);
     minPlatformY = 500;
 }
 
 function spawnInitialPlatforms() {
-    // FIX 3: Tăng số lượng bậc thang dự trữ lên 35 (Thay vì 20)
-    // Để khi nhảy cao (Double Jump) không bị hết đường
-    for (let i = 1; i <= 35; i++) {
+    for (let i = 1; i <= 120; i++) {
         let isLeft = Phaser.Math.Between(0, 1) === 0;
         let offsetX = Phaser.Math.Between(-40, 40);
-        let x = isLeft ? (LANE_LEFT + offsetX) : (LANE_RIGHT + offsetX);
+        
+        // Tính toán X dự kiến
+        let rawX = isLeft ? (LANE_LEFT + offsetX) : (LANE_RIGHT + offsetX);
+        
+        // FIX: Ép X vào trong màn hình (Clamp)
+        let x = Phaser.Math.Clamp(rawX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
+        
         let y = 500 - i * 85; 
         
         let p = platforms.create(x, y, 'platform');
@@ -205,7 +209,6 @@ function createTouchControls(scene) {
 function update() {
     if (isGameOver) return;
 
-    // Điều khiển
     if (cursors.left.isDown || isMovingLeft) {
         player.setVelocityX(-300);
         player.setFlipX(true);
@@ -216,11 +219,9 @@ function update() {
         player.setVelocityX(0);
     }
 
-    // Xuyên tường
     if (player.x < 0) player.x = SCREEN_W;
     else if (player.x > SCREEN_W) player.x = 0;
 
-    // Tính điểm
     let currentScore = Math.floor((450 - player.y) / 10);
     if (currentScore > score) {
         score = currentScore;
@@ -229,21 +230,28 @@ function update() {
 
     const destroyThreshold = this.cameras.main.scrollY + SCREEN_H;
 
-    // Logic Platform
+    // --- LOGIC THANG DI CHUYỂN ---
     platforms.children.iterate(child => {
         if (child.isMoving) {
             const speed = child.moveSpeed || 100;
-            const boundLeft = (score >= 200) ? (CENTER_X - 40) : 50;
-            const boundRight = (score >= 200) ? (CENTER_X + 40) : (SCREEN_W - 50);
+            
+            // Giới hạn di chuyển cũng phải dùng SAFE_MARGIN
+            const boundLeft = SAFE_MARGIN; 
+            const boundRight = SCREEN_W - SAFE_MARGIN;
 
-            if (child.x <= boundLeft) child.setVelocityX(speed);
-            else if (child.x >= boundRight) child.setVelocityX(-speed);
+            if (child.x <= boundLeft) {
+                child.x = boundLeft + 2; 
+                child.setVelocityX(speed); 
+            } 
+            else if (child.x >= boundRight) {
+                child.x = boundRight - 2; 
+                child.setVelocityX(-speed); 
+            }
         }
-        // Chỉ tái chế khi đã rớt hẳn khỏi màn hình
+        
         if (child.y > destroyThreshold) recyclePlatform(child);
     });
 
-    // Logic Enemy
     enemies.children.iterate(child => {
         if (child) {
             if (child.y > destroyThreshold) {
@@ -261,30 +269,23 @@ function update() {
 
 function recyclePlatform(platform) {
     if (pendingDualData) {
-        // Sinh ra bậc thang THẬT đi kèm với bậc thang giả trước đó
         platform.y = pendingDualData.y;
         
-        // Chọn vị trí khác phía với bậc thang giả
         let safeX;
-        
-        // FIX: Khi điểm cao (>200), giữ bậc thang thật gần trung tâm hơn để tránh bị khuất
+        // Logic chọn vị trí thang Real
         if (score >= 200) {
-            if (pendingDualData.x < CENTER_X) {
-                safeX = CENTER_X + Phaser.Math.Between(50, 70);
-            } else {
-                safeX = CENTER_X - Phaser.Math.Between(50, 70);
-            }
+            if (pendingDualData.x < CENTER_X) safeX = CENTER_X + Phaser.Math.Between(50, 70);
+            else safeX = CENTER_X - Phaser.Math.Between(50, 70);
         } else {
-            if (pendingDualData.x < CENTER_X) {
-                safeX = LANE_RIGHT + Phaser.Math.Between(-30, 30);
-            } else {
-                safeX = LANE_LEFT + Phaser.Math.Between(-30, 30);
-            }
+            if (pendingDualData.x < CENTER_X) safeX = LANE_RIGHT + Phaser.Math.Between(-30, 30);
+            else safeX = LANE_LEFT + Phaser.Math.Between(-30, 30);
         }
         
-        platform.x = safeX;
-        resetPlatformProperties(platform, safeX, pendingDualData.y, 'real');
-        pendingDualData = null;
+        // FIX: Clamp lại trước khi gán
+        platform.x = Phaser.Math.Clamp(safeX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
+        
+        resetPlatformProperties(platform, platform.x, pendingDualData.y, 'real');
+        pendingDualData = null; 
     } else {
         minPlatformY -= Phaser.Math.Between(75, 95);
         
@@ -296,20 +297,20 @@ function recyclePlatform(platform) {
             let offsetX = Phaser.Math.Between(-40, 40);
             newX = isLeft ? (LANE_LEFT + offsetX) : (LANE_RIGHT + offsetX);
         }
+
+        // FIX: Clamp trước khi gán
+        newX = Phaser.Math.Clamp(newX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
         
-        // Tỉ lệ xuất hiện bẫy (Fake + Real)
         let trapChance = 10;
         if (score > 50) trapChance = 25;
-        if (score > 150) trapChance = 40;
+        if (score > 150) trapChance = 40; 
 
         if (Phaser.Math.Between(1, 100) <= trapChance) {
-            // Tạo Fake trước, lưu pending để tạo Real sau
             platform.x = newX;
             platform.y = minPlatformY;
             resetPlatformProperties(platform, newX, minPlatformY, 'fake');
             pendingDualData = { x: newX, y: minPlatformY };
         } else {
-            // Tạo Real bình thường
             platform.x = newX;
             platform.y = minPlatformY;
             resetPlatformProperties(platform, newX, minPlatformY, 'real');
@@ -346,8 +347,10 @@ function resetPlatformProperties(p, x, y, type) {
         p.isMoving = true;
         let speedBonus = Math.min(score, 100);
         p.moveSpeed = Phaser.Math.Between(50, 150 + speedBonus);
+        
         let direction = Phaser.Math.RND.pick([-1, 1]);
         p.setVelocityX(p.moveSpeed * direction);
+        
         trySpawnEnemy(p, false);
     } else {
         trySpawnEnemy(p, false);
@@ -358,12 +361,11 @@ function trySpawnEnemy(platform, isFake) {
     let spawnRate = 20; 
     if (score > 50) spawnRate = 40;
     if (score > 150) spawnRate = 60;
-    if (isFake) spawnRate = 80; // Tăng tỉ lệ có địch trên bậc thang giả
+    if (isFake) spawnRate = 80; 
 
     if (Phaser.Math.Between(1, 100) <= spawnRate) {
         let offsetX = 0;
         if (isFake) {
-            // Random: Trái (-20), Giữa (0), Phải (20)
             const positions = [-20, 0, 20];
             offsetX = positions[Phaser.Math.Between(0, 2)];
         }
@@ -392,13 +394,24 @@ function gameOver(scene) {
     scene.time.removeEvent(timerEvent);
     
     const cam = scene.cameras.main;
-    const bg = scene.add.rectangle(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2, 300, 200, 0x000000, 0.8);
     
-    scene.add.text(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2 - 30, 'GAME OVER', 
-        { fontSize: '40px', fill: '#ff0000', fontWeight: 'bold' }).setOrigin(0.5);
+    const bg = scene.add.rectangle(
+        cam.scrollX + SCREEN_W/2, 
+        cam.scrollY + SCREEN_H/2, 
+        SCREEN_W,                 
+        SCREEN_H,                 
+        0x000000,                 
+        0.8                       
+    );
     
-    scene.add.text(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2 + 30, 'Chạm để chơi lại', 
-        { fontSize: '20px', fill: '#ffffff' }).setOrigin(0.5);
+    scene.add.text(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2 - 50, 'GAME OVER', 
+        { fontSize: '50px', fill: '#ff0000', fontWeight: 'bold', fontFamily: 'Arial' }).setOrigin(0.5);
+    
+    scene.add.text(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2 + 20, 'Score: ' + score, 
+        { fontSize: '30px', fill: '#FFD700', fontFamily: 'Arial' }).setOrigin(0.5);
+
+    scene.add.text(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2 + 70, 'Chạm để chơi lại', 
+        { fontSize: '20px', fill: '#ffffff', fontFamily: 'Arial' }).setOrigin(0.5);
 
     scene.input.once('pointerdown', () => {
         scene.scene.restart();
