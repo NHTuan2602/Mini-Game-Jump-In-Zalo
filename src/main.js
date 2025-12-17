@@ -4,13 +4,12 @@ import Phaser from 'phaser';
 const PLAYER_SIZE = 20;
 const PLATFORM_W = 70;
 const PLATFORM_H = 15;
-const ENEMY_SIZE = 16; 
+const ENEMY_SIZE = 12; 
+const SPRING_SIZE = 15; 
 
 const SCREEN_W = window.innerWidth;
 const SCREEN_H = window.innerHeight;
 
-// --- TÍNH TOÁN LỀ AN TOÀN (QUAN TRỌNG) ---
-// Để bậc thang không bị mất hình, tâm của nó phải cách mép ít nhất 1 nửa chiều rộng
 const SAFE_MARGIN = PLATFORM_W / 2; 
 
 const CENTER_X = SCREEN_W / 2;
@@ -42,6 +41,7 @@ const config = {
 let player;
 let platforms;
 let enemies;
+let springs;
 let cursors;
 let score = 0;
 let scoreText;
@@ -51,6 +51,8 @@ let isGameOver = false;
 let timerEvent;
 let minPlatformY;
 let pendingDualData = null; 
+
+let enemySafeCount = 0; 
 
 let isMovingLeft = false;
 let isMovingRight = false;
@@ -72,8 +74,14 @@ function preload() {
 
     // Enemy
     g.fillStyle(0xFF0000, 1);
-    g.fillCircle(8, 8, 8);
-    g.generateTexture('enemy', 16, 16);
+    g.fillCircle(ENEMY_SIZE/2, ENEMY_SIZE/2, ENEMY_SIZE/2);
+    g.generateTexture('enemy', ENEMY_SIZE, ENEMY_SIZE);
+    g.clear();
+
+    // Spring (MÀU MỚI: TÍM HỒNG - DỄ NHÌN)
+    g.fillStyle(0xFF00FF, 1); // Màu Tím Hồng (Magenta)
+    g.fillRect(0, 0, SPRING_SIZE, SPRING_SIZE/2); 
+    g.generateTexture('spring', SPRING_SIZE, SPRING_SIZE/2);
     g.clear();
 
     // Touch Button
@@ -87,11 +95,13 @@ function create() {
     score = 0;
     timeLeft = 200;
     pendingDualData = null;
+    enemySafeCount = 0;
     isMovingLeft = false;
     isMovingRight = false;
 
     platforms = this.physics.add.group({ allowGravity: false, immovable: true });
     enemies = this.physics.add.group({ allowGravity: false, immovable: true });
+    springs = this.physics.add.group({ allowGravity: false, immovable: true });
 
     createStartSafeZone();
     spawnInitialPlatforms();
@@ -104,6 +114,8 @@ function create() {
     player.body.checkCollision.right = false;
 
     // --- XỬ LÝ VA CHẠM ---
+
+    // 1. NHẢY THƯỜNG (-700)
     this.physics.add.collider(player, platforms, (player, platform) => {
         if (player.body.touching.down) {
             if (platform.isFake) {
@@ -116,19 +128,27 @@ function create() {
         }
     });
 
-    // Player vs Enemy
+    // 2. ĐẠP KẺ THÙ (-800)
     this.physics.add.overlap(player, enemies, (player, enemy) => {
         const playerBottom = player.body.y + player.body.height;
         const enemyTop = enemy.body.y;
 
         if (player.body.velocity.y > 0 && playerBottom < enemyTop + 15) {
             enemy.destroy();
-            player.setVelocityY(-1100); 
+            player.setVelocityY(-800); 
             score += 20;
             scoreText.setText('Score: ' + score);
             this.cameras.main.shake(100, 0.01);
         } else {
             gameOver(this);
+        }
+    });
+
+    // 3. NHẢY LÒ XO (-1200)
+    this.physics.add.overlap(player, springs, (player, spring) => {
+        if (player.body.velocity.y > 0) {
+            player.setVelocityY(-1200); 
+            this.cameras.main.shake(100, 0.02);
         }
     });
 
@@ -144,10 +164,9 @@ function create() {
 }
 
 function createStartSafeZone() {
-    // Đặt bậc an toàn ở vị trí tính toán hợp lý
     const startX = Phaser.Math.Clamp(LANE_LEFT, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
     const startPlatform = platforms.create(startX, 500, 'platform');
-    resetPlatformProperties(startPlatform, startX, 500, true);
+    resetPlatformProperties(startPlatform, startX, 500, 'start');
     minPlatformY = 500;
 }
 
@@ -155,18 +174,13 @@ function spawnInitialPlatforms() {
     for (let i = 1; i <= 120; i++) {
         let isLeft = Phaser.Math.Between(0, 1) === 0;
         let offsetX = Phaser.Math.Between(-40, 40);
-        
-        // Tính toán X dự kiến
         let rawX = isLeft ? (LANE_LEFT + offsetX) : (LANE_RIGHT + offsetX);
-        
-        // FIX: Ép X vào trong màn hình (Clamp)
         let x = Phaser.Math.Clamp(rawX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
-        
         let y = 500 - i * 85; 
         
         let p = platforms.create(x, y, 'platform');
-        let isSafe = i < 5;
-        resetPlatformProperties(p, x, y, isSafe ? 'start' : 'real'); 
+        let type = (i < 5) ? 'start' : 'random'; 
+        resetPlatformProperties(p, x, y, type); 
         
         if (y < minPlatformY) minPlatformY = y;
     }
@@ -230,12 +244,9 @@ function update() {
 
     const destroyThreshold = this.cameras.main.scrollY + SCREEN_H;
 
-    // --- LOGIC THANG DI CHUYỂN ---
     platforms.children.iterate(child => {
         if (child.isMoving) {
             const speed = child.moveSpeed || 100;
-            
-            // Giới hạn di chuyển cũng phải dùng SAFE_MARGIN
             const boundLeft = SAFE_MARGIN; 
             const boundRight = SCREEN_W - SAFE_MARGIN;
 
@@ -248,11 +259,10 @@ function update() {
                 child.setVelocityX(-speed); 
             }
         }
-        
         if (child.y > destroyThreshold) recyclePlatform(child);
     });
 
-    enemies.children.iterate(child => {
+    const updateChild = (child) => {
         if (child) {
             if (child.y > destroyThreshold) {
                 child.destroy();
@@ -262,7 +272,9 @@ function update() {
                 child.setVelocityX(child.platformParent.body.velocity.x);
             }
         }
-    });
+    };
+    enemies.children.iterate(updateChild);
+    springs.children.iterate(updateChild);
 
     if (player.y > destroyThreshold) gameOver(this);
 }
@@ -270,9 +282,7 @@ function update() {
 function recyclePlatform(platform) {
     if (pendingDualData) {
         platform.y = pendingDualData.y;
-        
         let safeX;
-        // Logic chọn vị trí thang Real
         if (score >= 200) {
             if (pendingDualData.x < CENTER_X) safeX = CENTER_X + Phaser.Math.Between(50, 70);
             else safeX = CENTER_X - Phaser.Math.Between(50, 70);
@@ -280,10 +290,7 @@ function recyclePlatform(platform) {
             if (pendingDualData.x < CENTER_X) safeX = LANE_RIGHT + Phaser.Math.Between(-30, 30);
             else safeX = LANE_LEFT + Phaser.Math.Between(-30, 30);
         }
-        
-        // FIX: Clamp lại trước khi gán
         platform.x = Phaser.Math.Clamp(safeX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
-        
         resetPlatformProperties(platform, platform.x, pendingDualData.y, 'real');
         pendingDualData = null; 
     } else {
@@ -298,7 +305,6 @@ function recyclePlatform(platform) {
             newX = isLeft ? (LANE_LEFT + offsetX) : (LANE_RIGHT + offsetX);
         }
 
-        // FIX: Clamp trước khi gán
         newX = Phaser.Math.Clamp(newX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
         
         let trapChance = 10;
@@ -313,7 +319,7 @@ function recyclePlatform(platform) {
         } else {
             platform.x = newX;
             platform.y = minPlatformY;
-            resetPlatformProperties(platform, newX, minPlatformY, 'real');
+            resetPlatformProperties(platform, newX, minPlatformY, 'random');
         }
     }
 }
@@ -328,32 +334,49 @@ function resetPlatformProperties(p, x, y, type) {
     p.isMoving = false;
     p.moveSpeed = 0;
 
+    if (enemySafeCount > 0) enemySafeCount--;
+
     if (type === 'start') return;
+
+    // TĂNG TỈ LỆ LÒ XO LÊN 20% (Để dễ test)
+    let hasSpring = false;
+    if (Phaser.Math.Between(1, 100) <= 20) {
+        spawnSpring(p);
+        enemySafeCount = 5; 
+        hasSpring = true;
+    }
 
     if (type === 'fake') {
         p.setTint(0x999999);
         p.isFake = true;
-        trySpawnEnemy(p, true);
+        if (!hasSpring && enemySafeCount <= 0) trySpawnEnemy(p, true);
         return;
     }
 
-    // type === 'real'
     let movingChance = 10;
     if (score > 50) movingChance = 20;
     if (score > 150) movingChance = 30;
 
-    if (Phaser.Math.Between(1, 100) <= movingChance) {
+    if (type !== 'real' && Phaser.Math.Between(1, 100) <= movingChance) {
         p.setTint(0x0000FF);
         p.isMoving = true;
         let speedBonus = Math.min(score, 100);
         p.moveSpeed = Phaser.Math.Between(50, 150 + speedBonus);
-        
         let direction = Phaser.Math.RND.pick([-1, 1]);
         p.setVelocityX(p.moveSpeed * direction);
         
-        trySpawnEnemy(p, false);
+        if (!hasSpring && enemySafeCount <= 0) trySpawnEnemy(p, false);
     } else {
-        trySpawnEnemy(p, false);
+        if (!hasSpring && enemySafeCount <= 0) trySpawnEnemy(p, false);
+    }
+}
+
+function spawnSpring(platform) {
+    const springY = platform.y - (PLATFORM_H / 2) - (SPRING_SIZE / 4) - 2; 
+    const spring = springs.create(platform.x, springY, 'spring');
+    spring.platformParent = platform;
+    if (platform.isMoving) {
+        spring.setVelocityX(platform.body.velocity.x);
     }
 }
 
@@ -394,14 +417,8 @@ function gameOver(scene) {
     scene.time.removeEvent(timerEvent);
     
     const cam = scene.cameras.main;
-    
     const bg = scene.add.rectangle(
-        cam.scrollX + SCREEN_W/2, 
-        cam.scrollY + SCREEN_H/2, 
-        SCREEN_W,                 
-        SCREEN_H,                 
-        0x000000,                 
-        0.8                       
+        cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2, SCREEN_W, SCREEN_H, 0x000000, 0.8
     );
     
     scene.add.text(cam.scrollX + SCREEN_W/2, cam.scrollY + SCREEN_H/2 - 50, 'GAME OVER', 
