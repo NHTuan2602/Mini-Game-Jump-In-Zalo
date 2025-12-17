@@ -266,10 +266,20 @@ function recyclePlatform(platform) {
         
         // Chọn vị trí khác phía với bậc thang giả
         let safeX;
-        if (pendingDualData.x < CENTER_X) {
-            safeX = LANE_RIGHT + Phaser.Math.Between(-30, 30);
+        
+        // FIX: Khi điểm cao (>200), giữ bậc thang thật gần trung tâm hơn để tránh bị khuất
+        if (score >= 200) {
+            if (pendingDualData.x < CENTER_X) {
+                safeX = CENTER_X + Phaser.Math.Between(50, 70);
+            } else {
+                safeX = CENTER_X - Phaser.Math.Between(50, 70);
+            }
         } else {
-            safeX = LANE_LEFT + Phaser.Math.Between(-30, 30);
+            if (pendingDualData.x < CENTER_X) {
+                safeX = LANE_RIGHT + Phaser.Math.Between(-30, 30);
+            } else {
+                safeX = LANE_LEFT + Phaser.Math.Between(-30, 30);
+            }
         }
         
         platform.x = safeX;
