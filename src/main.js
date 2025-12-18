@@ -188,7 +188,7 @@ function createStartSafeZone() {
 }
 
 function spawnInitialPlatforms() {
-    for (let i = 1; i <= 1000; i++) {
+    for (let i = 1; i <= 100; i++) {
         // Random 1 trong 3 làn
         let baseX = Phaser.Math.RND.pick(LANES);
         let offsetX = Phaser.Math.Between(-30, 30); // Độ lệch nhỏ để không thẳng hàng tăm tắp
@@ -287,8 +287,11 @@ function update() {
     }
 
     // Xóa sớm hơn: Trừ đi 200px để bậc thang được tái sử dụng nhanh hơn khi vừa xuống thấp
-    const destroyThreshold = this.cameras.main.scrollY + VIEW_H - 200;
+    const cam = this.cameras.main;
+    // Dùng worldView.bottom để lấy cạnh dưới thực tế của camera (chính xác hơn VIEW_H cố định)
+    const destroyThreshold = (cam.worldView.bottom || (cam.scrollY + cam.displayHeight)) - 200;
 
+    const platformsToRecycle = [];
     platforms.children.iterate(child => {
         if (child.isMoving) {
             const speed = child.moveSpeed || 100;
@@ -306,9 +309,12 @@ function update() {
         }
         
         if (child.y > destroyThreshold) {
-            recyclePlatform(child);
+            // Gom các bậc thang cần tái chế vào mảng tạm để xử lý sau
+            // (Tránh lỗi vừa duyệt vừa sửa danh sách)
+            platformsToRecycle.push(child);
         }
     });
+    platformsToRecycle.forEach(child => recyclePlatform(child));
 
     const updateChild = (child) => {
         if (child) {
@@ -317,7 +323,25 @@ function update() {
                 return;
             }
             if (child.platformParent && child.platformParent.active && child.body) {
-                child.setVelocityX(child.platformParent.body.velocity.x);
+                // Chỉ đồng bộ vận tốc nếu KHÔNG phải là enemy đang tuần tra
+                if (!child.isPatrolling) {
+                    child.setVelocityX(child.platformParent.body.velocity.x);
+                }
+
+                // LOGIC KẺ THÙ TUẦN TRA (Di chuyển trên bậc thang đứng yên)
+                if (child.isPatrolling) {
+                    const p = child.platformParent;
+                    // Tính giới hạn mép bậc thang (trừ đi kích thước enemy để không lòi ra ngoài)
+                    const limit = (p.displayWidth / 2) - (child.width / 2);
+                    
+                    // Nếu đi quá mép phải -> quay đầu sang trái
+                    if (child.x > p.x + limit) {
+                        child.setVelocityX(-Math.abs(child.body.velocity.x));
+                    } else if (child.x < p.x - limit) {
+                        // Nếu đi quá mép trái -> quay đầu sang phải
+                        child.setVelocityX(Math.abs(child.body.velocity.x));
+                    }
+                }
             }
         }
     };
@@ -328,12 +352,14 @@ function update() {
 }
 
 function recyclePlatform(platform) {
-    if (!platform || !platform.body) return;
+    if (!platform) return;
 
     const attachedEnemies = enemies.getChildren().filter(e => e.platformParent === platform);
     attachedEnemies.forEach(e => e.destroy());
     const attachedSprings = springs.getChildren().filter(s => s.platformParent === platform);
     attachedSprings.forEach(s => s.destroy());
+
+    platform.destroy(); // Hủy hoàn toàn bậc thang cũ để tránh lỗi hiển thị
 
     // Sinh thang mới
     minPlatformY -= Phaser.Math.Between(85, 105);
@@ -346,10 +372,9 @@ function recyclePlatform(platform) {
     let newX = baseX + offsetX;
     newX = Phaser.Math.Clamp(newX, SAFE_MARGIN, SCREEN_W - SAFE_MARGIN);
     
-    platform.x = newX;
-    platform.y = minPlatformY;
-
-    resetPlatformProperties(platform, newX, minPlatformY, 'random');
+    // Tạo bậc thang MỚI TINH thay vì dùng lại cái cũ
+    const newPlatform = platforms.create(newX, minPlatformY, 'platform');
+    resetPlatformProperties(newPlatform, newX, minPlatformY, 'random');
 }
 
 function resetPlatformProperties(p, x, y, type) {
@@ -363,6 +388,19 @@ function resetPlatformProperties(p, x, y, type) {
     p.body.checkCollision.none = false;
     p.isMoving = false;
     p.moveSpeed = 0;
+
+    // --- ĐỘ KHÓ: BẬC THANG THU NHỎ DẦN ---
+    // Mặc định scale là 1. Từ điểm 50 trở đi, bậc thang nhỏ dần.
+    // Tối đa nhỏ còn 60% (0.6) kích thước gốc.
+    // Nếu trên 1000 điểm, thang nhỏ còn 40% (0.4)
+    let scaleFactor = 1;
+    if (score > 1000) {
+        scaleFactor = 0.4; 
+    } else if (score > 50) {
+        scaleFactor = Math.max(0.6, 1 - ((score - 50) * 0.002));
+    }
+    p.setScale(scaleFactor, 1);
+    p.refreshBody(); // Cập nhật lại vùng va chạm vật lý sau khi scale
 
     if (enemySafeCount > 0) enemySafeCount--;
 
@@ -406,14 +444,28 @@ function trySpawnEnemy(platform) {
     let spawnRate = 20; 
     if (score > 50) spawnRate = 40;
     if (score > 150) spawnRate = 60;
+    if (score > 1000) spawnRate = 80; // Trên 1000 điểm, enemy xuất hiện dày đặc
 
     if (Phaser.Math.Between(1, 100) <= spawnRate) {
-        const enemyY = platform.y - (PLATFORM_H / 2) - (ENEMY_SIZE / 2) - 2; 
+        // Tính lại vị trí Y dựa trên chiều cao thực tế (dù scale Y không đổi nhưng cho chắc chắn)
+        const enemyY = platform.y - (platform.displayHeight / 2) - (ENEMY_SIZE / 2) - 2; 
         const enemy = enemies.create(platform.x, enemyY, 'enemy');
         enemy.setTint(0xFF0000);
         enemy.platformParent = platform;
+        enemy.isPatrolling = false;
+
         if (platform.isMoving) {
             enemy.setVelocityX(platform.body.velocity.x);
+        } else {
+            // --- ĐỘ KHÓ: KẺ THÙ DI CHUYỂN TRÊN BẬC THANG ĐỨNG YÊN ---
+            if (score > 100) { // Từ 100 điểm trở lên mới bắt đầu di chuyển
+                enemy.isPatrolling = true;
+                // Tốc độ tăng dần theo điểm, tối đa 100
+                let maxSpeed = (score > 1000) ? 200 : 100; // Trên 1000 điểm, tốc độ tối đa tăng gấp đôi
+                let patrolSpeed = Math.min(40 + (score * 0.1), maxSpeed);
+                // Random hướng di chuyển ban đầu
+                enemy.setVelocityX(Phaser.Math.RND.pick([-1, 1]) * patrolSpeed);
+            }
         }
     }
 }
@@ -445,7 +497,7 @@ function gameOver(scene) {
         { fontSize: '40px', fill: '#FFD700', fontFamily: 'Arial' }).setOrigin(0.5);
     uiGroup.add(txt2);
 
-    const txt3 = scene.add.text(SCREEN_W/2, SCREEN_H/2 + 100, 'Chạm để chơi lại', 
+    const txt3 = scene.add.text(SCREEN_W/2, SCREEN_H/2 + 100, 'chơi lại', 
         { fontSize: '30px', fill: '#ffffff', fontFamily: 'Arial' }).setOrigin(0.5);
     uiGroup.add(txt3);
 
