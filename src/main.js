@@ -194,7 +194,6 @@ function createStartSafeZone() {
 }
 
 function spawnInitialPlatforms() {
-    // Tăng lên 100 bậc
     for (let i = 1; i <= 3000; i++) {
         // Random 1 trong 3 làn
         let baseX = Phaser.Math.RND.pick(LANES);
@@ -293,7 +292,8 @@ function update() {
         scoreText.setText('Score: ' + score);
     }
 
-    const destroyThreshold = this.cameras.main.scrollY + VIEW_H;
+    // Xóa sớm hơn: Trừ đi 200px để bậc thang được tái sử dụng nhanh hơn khi vừa xuống thấp
+    const destroyThreshold = this.cameras.main.scrollY + VIEW_H - 200;
 
     platforms.children.iterate(child => {
         if (child.isMoving) {
